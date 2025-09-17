@@ -1,0 +1,6 @@
+{
+  "ConnectionStrings": {
+    "kiddo": "Data Source=localhost:1521/testdb;User Id=kiddo;Password=kiddo;",
+    "tkiddo": "Data Source=localhost:1521/testdb;User Id=tkiddo;Password=tkiddo;"
+  }
+}
