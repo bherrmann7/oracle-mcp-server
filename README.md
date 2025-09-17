@@ -33,11 +33,20 @@ dotnet build
 
 Copy the example credentials file:
 
+**Windows:**
+```cmd
+copy oracle-mcp-server-creds.json.example %USERPROFILE%\.oracle-mcp-server-creds.json
+```
+
+**Mac/Linux:**
 ```bash
 cp oracle-mcp-server-creds.json.example ~/.oracle-mcp-server-creds.json
 ```
 
-Edit `~/.oracle-mcp-server-creds.json` with your Oracle connection strings:
+Edit the credentials file with your Oracle connection strings:
+
+- **Windows:** `%USERPROFILE%\.oracle-mcp-server-creds.json`
+- **Mac/Linux:** `~/.oracle-mcp-server-creds.json`
 
 ```json
 {
@@ -50,6 +59,12 @@ Edit `~/.oracle-mcp-server-creds.json` with your Oracle connection strings:
 
 Secure the credentials file:
 
+**Windows:**
+```cmd
+icacls %USERPROFILE%\.oracle-mcp-server-creds.json /inheritance:r /grant:r %USERNAME%:F
+```
+
+**Mac/Linux:**
 ```bash
 chmod 600 ~/.oracle-mcp-server-creds.json
 ```
@@ -106,8 +121,11 @@ The server will start and listen for MCP protocol messages on stdin/stdout.
 
 ### Connection Strings
 
-The server loads connection strings from `~/.oracle-mcp-server-creds.json` by default. If this file doesn't exist, it
-falls back to `appsettings.json`.
+The server loads connection strings from the user's home directory by default. If this file doesn't exist, it falls back to `appsettings.json`.
+
+**Default credential file locations:**
+- **Windows:** `%USERPROFILE%\.oracle-mcp-server-creds.json`
+- **Mac/Linux:** `~/.oracle-mcp-server-creds.json`
 
 **Credentials File Structure:**
 
@@ -154,7 +172,9 @@ dotnet test --filter "TestMethodName"
 ## Security
 
 - **Credentials Isolation**: Database credentials are stored in a separate file outside the codebase
-- **File Permissions**: Secure your credentials file with `chmod 600 ~/.oracle-mcp-server-creds.json`
+- **File Permissions**: Secure your credentials file:
+  - **Windows:** `icacls %USERPROFILE%\.oracle-mcp-server-creds.json /inheritance:r /grant:r %USERNAME%:F`
+  - **Mac/Linux:** `chmod 600 ~/.oracle-mcp-server-creds.json`
 - **No Credential Logging**: Connection strings are not logged or exposed in error messages
 - **Parameterized Queries**: Use parameterized queries to prevent SQL injection
 
@@ -177,8 +197,10 @@ responses follow a consistent JSON format with success indicators and error hand
 
 ### File Not Found Errors
 
-- Make sure `~/.oracle-mcp-server-creds.json` exists and is readable
-- Check file permissions (should be 600 for security)
+- Make sure the credentials file exists and is readable:
+  - **Windows:** `%USERPROFILE%\.oracle-mcp-server-creds.json`
+  - **Mac/Linux:** `~/.oracle-mcp-server-creds.json`
+- Check file permissions are set correctly for security
 
 ### MCP Protocol Issues
 
