@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
 using ModelContextProtocol.Server;
@@ -32,45 +33,53 @@ public static class OracleDatabaseTools
     public static async Task<string> ExecuteQuery(
         string sql,
         [Description("Schema/user name to use (e.g., 'bherrmann', 'tbherrmann', 'profitshare')")]
-        string schema)
+        string schema,
+        CancellationToken cancellationToken = default)
     {
         try
         {
             var connectionString = GetConnectionString(schema);
-            using var connection = new OracleConnection(connectionString);
-            await connection.OpenAsync();
 
-            using var command = new OracleCommand(sql, connection);
-            using var reader = await command.ExecuteReaderAsync();
-
-            var results = new List<Dictionary<string, object?>>();
-
-            while (await reader.ReadAsync())
-            {
-                var row = new Dictionary<string, object?>();
-                for (var i = 0; i < reader.FieldCount; i++)
+            var results = await OracleConnectionHelper.ExecuteWithResilienceAsync(
+                connectionString,
+                async (connection, ct) =>
                 {
-                    var columnName = reader.GetName(i);
-                    var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
+                    using var command = new OracleCommand(sql, connection);
+                    using var reader = await command.ExecuteReaderAsync(ct);
 
-                    // Convert Oracle types to JSON-serializable types
-                    if (value is DateTime dt)
-                        value = dt.ToString("yyyy-MM-dd HH:mm:ss");
-                    else if (value is decimal dec)
-                        value = dec;
-                    else if (value is OracleDecimal oracleDecimal)
-                        value = oracleDecimal.IsNull ? null : oracleDecimal.Value;
-                    else if (value is OracleString oracleString)
-                        value = oracleString.IsNull ? null : oracleString.Value;
-                    else if (value is OracleDate oracleDate)
-                        value = oracleDate.IsNull ? null : oracleDate.Value.ToString("yyyy-MM-dd HH:mm:ss");
-                    else if (value is OracleTimeStamp oracleTimeStamp) value = oracleTimeStamp.IsNull ? null : oracleTimeStamp.Value.ToString("yyyy-MM-dd HH:mm:ss.fff");
+                    var queryResults = new List<Dictionary<string, object?>>();
 
-                    row[columnName] = value;
-                }
+                    while (await reader.ReadAsync(ct))
+                    {
+                        var row = new Dictionary<string, object?>();
+                        for (var i = 0; i < reader.FieldCount; i++)
+                        {
+                            var columnName = reader.GetName(i);
+                            var value = reader.IsDBNull(i) ? null : reader.GetValue(i);
 
-                results.Add(row);
-            }
+                            // Convert Oracle types to JSON-serializable types
+                            if (value is DateTime dt)
+                                value = dt.ToString("yyyy-MM-dd HH:mm:ss");
+                            else if (value is decimal dec)
+                                value = dec;
+                            else if (value is OracleDecimal oracleDecimal)
+                                value = oracleDecimal.IsNull ? null : oracleDecimal.Value;
+                            else if (value is OracleString oracleString)
+                                value = oracleString.IsNull ? null : oracleString.Value;
+                            else if (value is OracleDate oracleDate)
+                                value = oracleDate.IsNull ? null : oracleDate.Value.ToString("yyyy-MM-dd HH:mm:ss");
+                            else if (value is OracleTimeStamp oracleTimeStamp)
+                                value = oracleTimeStamp.IsNull ? null : oracleTimeStamp.Value.ToString("yyyy-MM-dd HH:mm:ss.fff");
+
+                            row[columnName] = value;
+                        }
+
+                        queryResults.Add(row);
+                    }
+
+                    return queryResults;
+                },
+                cancellationToken);
 
             var response = new
             {
@@ -107,16 +116,21 @@ public static class OracleDatabaseTools
     public static async Task<string> ExecuteNonQuery(
         string sql,
         [Description("Schema/user name to use (e.g., 'bherrmann', 'tbherrmann', 'profitshare')")]
-        string schema)
+        string schema,
+        CancellationToken cancellationToken = default)
     {
         try
         {
             var connectionString = GetConnectionString(schema);
-            using var connection = new OracleConnection(connectionString);
-            await connection.OpenAsync();
 
-            using var command = new OracleCommand(sql, connection);
-            var rowsAffected = await command.ExecuteNonQueryAsync();
+            var rowsAffected = await OracleConnectionHelper.ExecuteWithResilienceAsync(
+                connectionString,
+                async (connection, ct) =>
+                {
+                    using var command = new OracleCommand(sql, connection);
+                    return await command.ExecuteNonQueryAsync(ct);
+                },
+                cancellationToken);
 
             var response = new
             {
@@ -152,25 +166,31 @@ public static class OracleDatabaseTools
     [Description("Test the Oracle database connection")]
     public static async Task<string> TestConnection(
         [Description("Schema/user name to test (e.g., 'bherrmann', 'tbherrmann', 'profitshare')")]
-        string schema)
+        string schema,
+        CancellationToken cancellationToken = default)
     {
         try
         {
             var connectionString = GetConnectionString(schema);
-            using var connection = new OracleConnection(connectionString);
-            await connection.OpenAsync();
 
-            // Test with a simple query
-            using var command = new OracleCommand("SELECT SYSDATE FROM DUAL", connection);
-            var result = await command.ExecuteScalarAsync();
+            var (serverTime, databaseVersion) = await OracleConnectionHelper.ExecuteWithResilienceAsync(
+                connectionString,
+                async (connection, ct) =>
+                {
+                    // Test with a simple query
+                    using var command = new OracleCommand("SELECT SYSDATE FROM DUAL", connection);
+                    var result = await command.ExecuteScalarAsync(ct);
+                    return (result?.ToString(), connection.ServerVersion);
+                },
+                cancellationToken);
 
             var response = new
             {
                 success = true,
                 message = "Connection successful",
                 schema,
-                serverTime = result?.ToString(),
-                databaseVersion = connection.ServerVersion
+                serverTime,
+                databaseVersion
             };
 
             return JsonSerializer.Serialize(response, new JsonSerializerOptions
