@@ -16,7 +16,7 @@ public static class OracleConnectionHelper
 {
     // Configuration constants
     private const int ConnectionTimeoutSeconds = 15;
-    private const int CommandTimeoutSeconds = 120;
+    private const int CommandTimeoutSeconds = 60;  // Reduced from 120 to fail faster
     private const int MaxRetryAttempts = 3;
     private const int InitialRetryDelayMs = 500;
 
@@ -247,13 +247,33 @@ public static class OracleConnectionHelper
         // Connections older than this will be discarded when returned to pool
         if (!connectionString.Contains("Connection Lifetime", StringComparison.OrdinalIgnoreCase))
         {
-            builder["Connection Lifetime"] = 300; // 5 minutes
+            builder["Connection Lifetime"] = 180; // 3 minutes (reduced from 5)
         }
 
         // Validate connection on borrow from pool
         if (!connectionString.Contains("Validate Connection", StringComparison.OrdinalIgnoreCase))
         {
             builder["Validate Connection"] = true;
+        }
+        
+        // Limit pool size to prevent too many stale connections
+        if (!connectionString.Contains("Min Pool Size", StringComparison.OrdinalIgnoreCase))
+        {
+            builder["Min Pool Size"] = 1;
+        }
+        if (!connectionString.Contains("Max Pool Size", StringComparison.OrdinalIgnoreCase))
+        {
+            builder["Max Pool Size"] = 5;
+        }
+        
+        // Reduce how long connections can be idle before being removed
+        if (!connectionString.Contains("Incr Pool Size", StringComparison.OrdinalIgnoreCase))
+        {
+            builder["Incr Pool Size"] = 1;
+        }
+        if (!connectionString.Contains("Decr Pool Size", StringComparison.OrdinalIgnoreCase))
+        {
+            builder["Decr Pool Size"] = 1;
         }
 
         return builder.ConnectionString;
@@ -293,7 +313,12 @@ public static class OracleConnectionHelper
             17410 => true, // No more data to read from socket
             24338 => true, // Statement handle not executed
 
-            _ => false
+            // ODP.NET internal errors (high numbers are internal driver errors)
+            50000 => true, // Connection request timed out (ODP.NET internal)
+            50201 => true, // Failed to connect/parse connect string (ODP.NET internal)
+            
+            // Any error >= 50000 is likely an ODP.NET internal error worth retrying
+            _ => oex.Number >= 50000
         };
     }
 
@@ -312,7 +337,9 @@ public static class OracleConnectionHelper
             17002 => true, // Connection failure
             17008 => true, // Connection closed
             17410 => true, // No more data to read from socket
-            _ => false
+            50000 => true, // Connection request timed out (ODP.NET internal)
+            50201 => true, // Failed to connect/parse connect string (ODP.NET internal)
+            _ => oex.Number >= 50000 // Any ODP.NET internal error
         };
     }
 
