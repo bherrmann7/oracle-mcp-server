@@ -7,7 +7,9 @@ namespace OracleMcpServer;
 
 /// <summary>
 /// Provides resilient Oracle database connection handling with:
-/// - Connection pooling disabled (prevents stale connection issues in long-lived MCP server)
+/// - Connection pooling with Validate Connection (Oracle pings before returning from pool)
+/// - Short connection lifetime to expire stale pooled connections
+/// - SELECT 77 FROM DUAL validation after opening to catch broken sessions early
 /// - Connection timeouts to prevent hanging
 /// - Retry logic with exponential backoff at the operation level
 /// - Proper cancellation token support
@@ -16,6 +18,7 @@ public static class OracleConnectionHelper
 {
     private const int ConnectionTimeoutSeconds = 15;
     private const int CommandTimeoutSeconds = 120;
+    private const int ValidationTimeoutSeconds = 5;
     private const int MaxRetryAttempts = 3;
     private const int InitialRetryDelayMs = 1000;
 
@@ -36,6 +39,11 @@ public static class OracleConnectionHelper
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
             await connection.OpenAsync(linkedCts.Token);
+
+            // Validate the connection is truly usable with a lightweight ping.
+            // Catches stale/broken sessions that appear "open" but can't execute queries.
+            await ValidateConnectionAsync(connection, cancellationToken);
+
             return connection;
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -112,6 +120,31 @@ public static class OracleConnectionHelper
     }
 
     /// <summary>
+    /// Validates a connection by executing a lightweight query.
+    /// Throws if the connection is broken so the retry loop can open a fresh one.
+    /// </summary>
+    private static async Task ValidateConnectionAsync(
+        OracleConnection connection,
+        CancellationToken cancellationToken)
+    {
+        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(ValidationTimeoutSeconds));
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
+
+        try
+        {
+            using var cmd = new OracleCommand("SELECT 77 FROM DUAL", connection);
+            var result = await cmd.ExecuteScalarAsync(linkedCts.Token);
+
+            if (result == null || Convert.ToInt32(result) != 77)
+                throw new InvalidOperationException("Connection validation returned unexpected result");
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new TimeoutException($"Connection validation timed out after {ValidationTimeoutSeconds} seconds");
+        }
+    }
+
+    /// <summary>
     /// Safely disposes a connection without throwing.
     /// </summary>
     private static async Task SafeDisposeAsync(OracleConnection connection)
@@ -133,17 +166,28 @@ public static class OracleConnectionHelper
 
     /// <summary>
     /// Configures connection string for MCP server use:
-    /// - Pooling disabled to avoid stale connections in long-lived, sporadic-use process
+    /// - Pooling enabled with Validate Connection (Oracle pings before returning from pool)
+    /// - Short connection lifetime so stale connections expire automatically
     /// - Connection timeout enforced
     /// </summary>
     private static string EnsureConnectionSettings(string connectionString)
     {
         var builder = new OracleConnectionStringBuilder(connectionString);
 
-        // Disable connection pooling entirely.
-        // MCP servers are long-lived but usage is sporadic — pooled connections
-        // go stale between uses and cause ORA-50000/50201 errors.
-        builder.Pooling = false;
+        // Re-enable pooling with validation. Oracle's "Validate Connection" pings each
+        // connection before returning it from the pool, rejecting dead ones automatically.
+        // Combined with a short lifetime, this handles the stale connection problem while
+        // avoiding the overhead of a fresh TCP+auth handshake for every single query.
+        builder.Pooling = true;
+        builder.ValidateConnection = true;
+
+        // Expire pooled connections after 5 minutes — prevents long-idle connections
+        // from accumulating and failing when Oracle or the network drops them.
+        builder.ConnectionLifeTime = 300;
+
+        // Allow pool to shrink to zero when idle — no wasted resources between bursts.
+        builder.MinPoolSize = 0;
+        builder.MaxPoolSize = 5;
 
         // Enforce connection timeout
         if (builder.ConnectionTimeout == 0 || builder.ConnectionTimeout > ConnectionTimeoutSeconds)
