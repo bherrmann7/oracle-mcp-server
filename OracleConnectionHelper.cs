@@ -19,7 +19,7 @@ public static class OracleConnectionHelper
     private const int ConnectionTimeoutSeconds = 15;
     private const int CommandTimeoutSeconds = 120;
     private const int ValidationTimeoutSeconds = 5;
-    private const int MaxRetryAttempts = 3;
+    private const int MaxRetryAttempts = 5;
     private const int InitialRetryDelayMs = 1000;
 
     /// <summary>
@@ -95,6 +95,16 @@ public static class OracleConnectionHelper
             {
                 lastException = ex;
                 Console.Error.WriteLine($"[OracleMCP] Attempt {attempt}/{MaxRetryAttempts} failed: {ex.Message}");
+
+                // Clear all connection pools immediately. The connection object may be too
+                // broken for ClearPool(connection) to work, and with MaxPoolSize=5 across
+                // a few schemas there's no meaningful cost to clearing everything.
+                try
+                {
+                    OracleConnection.ClearAllPools();
+                    Console.Error.WriteLine("[OracleMCP] All connection pools cleared after failure");
+                }
+                catch { /* swallow */ }
             }
             finally
             {
@@ -181,9 +191,13 @@ public static class OracleConnectionHelper
         builder.Pooling = true;
         builder.ValidateConnection = true;
 
-        // Expire pooled connections after 5 minutes — prevents long-idle connections
-        // from accumulating and failing when Oracle or the network drops them.
-        builder.ConnectionLifeTime = 300;
+        // Expire pooled connections after 60 seconds — aggressively recycles idle
+        // connections. Works in tandem with the keepalive service to ensure fresh connections.
+        builder.ConnectionLifeTime = 60;
+
+        // Listen for Oracle RAC FAN (Fast Application Notification) events so ODP.NET
+        // proactively purges connections to downed nodes.
+        builder.HAEvents = true;
 
         // Allow pool to shrink to zero when idle — no wasted resources between bursts.
         builder.MinPoolSize = 0;

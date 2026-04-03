@@ -28,6 +28,8 @@ public static class Program
         ConfigurationHelper.LoadCredentialsIntoConfigurationBuilder(builder.Configuration);
         Console.Error.Flush();
 
+        builder.Services.AddHostedService<ConnectionKeepAliveService>();
+
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
